@@ -29,7 +29,7 @@ static FILE mystdout = FDEV_SETUP_STREAM(USART_Transmit, getch,_FDEV_SETUP_RW);
 
 uint8_t search_sensors(void);
 int scan_sensors();
-void check_temps();
+int check_temps();
 // flags
 enum my_flags { rescan=0x1, dump=0x2 };
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
@@ -38,6 +38,8 @@ xbee_packet isr_packet;
 
 
 EMPTY_INTERRUPT(WDT_vect);
+volatile char serial_buffer[20];
+volatile uint8_t ser_buf_size;
 
 ISR(USART_RX_vect) {
 	static uint8_t uart_state = 0;
@@ -46,7 +48,7 @@ ISR(USART_RX_vect) {
 	char buffer[12];
 	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; return; }
 	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; return; }
-	if ((tmp == '\r') && (uart_state == 2)) { OK=1; return; }
+	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; return; }
 	switch (tmp) {
 		case '1':
 			state |= rescan;
@@ -55,11 +57,15 @@ ISR(USART_RX_vect) {
 			state |= dump;
 			break;
 		default:
-			start_tx_packet(&isr_packet,0,0);
-			packet_append_string_P(&isr_packet,PSTR("isr read in "));
-			snprintf_P(buffer,12,PSTR("%c(%d) %d\n"),tmp,tmp,status);
-			packet_append_string(&isr_packet,buffer);
-			packet_end_send(&isr_packet);
+			//start_tx_packet(&isr_packet,0,0);
+			//packet_append_string_P(&isr_packet,PSTR("isr read in "));
+			//snprintf_P(buffer,12,PSTR("%c(%d) %d\n"),tmp,tmp,status);
+			//packet_append_string(&isr_packet,buffer);
+			//packet_end_send(&isr_packet);
+			if (ser_buf_size < 20) {
+				serial_buffer[ser_buf_size] = tmp;
+				ser_buf_size++;
+			}
 	}
 }
 
@@ -144,19 +150,17 @@ void do_dump_sensors() {
 	char buffer[5];
 	snprintf(buffer,5,"%d ",nSensors);
 	packet_append_string(&main_packet,buffer);
-	packet_append_string_P(&main_packet,PSTR("sensors\n"));
+	packet_append_string(&main_packet,"sensors\n");
 	packet_end_send(&main_packet);
 	for (y=0; y < nSensors;y++) {
 		_delay_ms(5);
 		start_tx_packet(&main_packet,0,0);
-		packet_append_string(&main_packet,"sensor ");
-		snprintf(buffer,5,"%d ",y);
-		packet_append_string(&main_packet,buffer);
+		packet_append_byte(&main_packet,0x00);
+		packet_append_byte(&main_packet,0x01);
+		packet_append_byte(&main_packet,y);
 		for (x=0; x < 8; x++) {
-			snprintf(buffer,5,"%02x ",gSensorIDs[y][x]);
-			packet_append_string(&main_packet,buffer);
+			packet_append_byte(&main_packet,gSensorIDs[y][x]);
 		}
-		packet_append_byte(&main_packet,'\n');
 		packet_end_send(&main_packet);
 	}
 	#ifdef PARASITE
@@ -191,13 +195,14 @@ int main(void) {
 	}
 	char buffer[5];
 	start_tx_packet(&main_packet,0,0);
-	packet_append_string_P(&main_packet,PSTR("last reset caused by code "));
+	packet_append_string(&main_packet,"last reset caused by code ");
 	snprintf(buffer,5,"%2d\n",old_mcusr);
 	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
 
 	// repeat forever
 	sei();
+	int ret;
 	while (1) {
 		if (stack_mark != startups) {
 			while (1) {
@@ -205,14 +210,28 @@ int main(void) {
 				_delay_ms(1000);
 			}
 		}
+		cli();
+		if (ser_buf_size) {
+			start_tx_packet(&main_packet,0,0);
+			packet_append_string(&main_packet,"unknown bytes in serial buffer ");
+			int x;
+			for (x = 0; x < ser_buf_size; x++) {
+				packet_append_byte(&main_packet,serial_buffer[x]);
+			}
+			packet_append_byte(&main_packet,'\n');
+			packet_end_send(&main_packet);
+			ser_buf_size = 0;
+		}
+		sei();
 		if (state & rescan) nSensors = scan_sensors();
 		if (state & dump) do_dump_sensors();
-		check_temps();
-		XBEE_OFF;
+		ret = check_temps();
+		if (ret != 1) XBEE_OFF;
 		wdt_delay();
 	}
 }
-void check_temps() {
+int check_temps() {
+	int main_return = 0;
 	unsigned int x;
 	uint8_t ret;
 	uint8_t subzero[MAXSENSORS],cel[MAXSENSORS],cel_frac_bits[MAXSENSORS];
@@ -232,6 +251,7 @@ void check_temps() {
 	}
 	_delay_ms(DS18B20_TCONV_12BIT);
 	uint16_t adc_value = ADC;
+	if (adc_value == 1023) main_return = 1;
 	adc_off();
 	for (x=0; x < nSensors;x++) {
 		ret = DS18X20_read_meas(gSensorIDs[x],&subzero[x], &cel[x], &cel_frac_bits[x]);
@@ -255,6 +275,7 @@ void check_temps() {
 	snprintf(buffer,15,"c %d %d e\n",check,adc_value);
 	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
+	return main_return;
 }
 #ifdef SORT
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
