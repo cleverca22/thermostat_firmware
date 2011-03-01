@@ -4,7 +4,7 @@ F_CPU=4000000UL
 BAUD=9600
 
 DS18B20=ds18x20/DS18X20_get_power_status.o ds18x20.o ds18x20/DS18X20_read_meas.o ds18x20/DS18X20_meas_to_cel.o ds18x20/DS18X20_find_sensor.o
-OBJECTS=main.o my_uart.o onewire.o ${DS18B20} crc8.o
+OBJECTS=main.o my_uart.o onewire.o ${DS18B20} crc8.o packet.o
 .SECONDARY: main.S my_uart.S
 
 CFLAGS=-mmcu=${CHIP_GCC} -Os -DF_CPU=${F_CPU} -DBAUD=${BAUD}
@@ -55,3 +55,4 @@ fat_functions: a.out
 router_program: avr.bin
 	scp avr.bin newrouter:/home/clever/avr/avr.bin
 	ssh newrouter -t /usr/local/bin/avrdude -p ${CHIP} -U flash:w:/home/clever/avr/avr.bin -y -i 15
+main.o: main.c packet.h

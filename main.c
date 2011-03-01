@@ -10,6 +10,7 @@
 #include "my_uart.h"
 #include "onewire.h"
 #include "ds18x20.h"
+#include "packet.h"
 
 #define NO_PARASITE
 
@@ -32,6 +33,8 @@ void check_temps();
 enum my_flags { rescan=0x1, dump=0x2 };
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
 volatile uint8_t OK; // make this into a bit-field
+uint8_t stack_mark; // FIXME, must be at end of .bss
+xbee_packet main_packet,isr_packet;
 
 
 EMPTY_INTERRUPT(WDT_vect);
@@ -40,6 +43,7 @@ ISR(USART_RX_vect) {
 	static uint8_t uart_state = 0;
 	unsigned char status = UCSR0A;
 	unsigned char tmp = getch();
+	char buffer[12];
 	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; return; }
 	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; return; }
 	if ((tmp == '\r') && (uart_state == 2)) { OK=1; return; }
@@ -51,7 +55,11 @@ ISR(USART_RX_vect) {
 			state |= dump;
 			break;
 		default:
-			printf_P(PSTR("isr read in %c(%d) %d\n"),tmp,tmp,status);
+			start_tx_packet(&isr_packet,0,0);
+			packet_append_string(&isr_packet,"isr read in ");
+			snprintf(buffer,12,"%c(%d) %d\n",tmp,tmp,status);
+			packet_append_string(&isr_packet,buffer);
+			packet_end_send(&isr_packet);
 	}
 }
 
@@ -70,19 +78,27 @@ void init() {
 	USART_Init(); // min
 	stdout = &mystdout;
 	_delay_ms(5);
-	puts_P(PSTR("serial port online"));
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"serial port online\n");
+	packet_end_send(&main_packet);
 
 
 	adc_init();
 	startups = eeprom_read_byte(0);
 	startups++;
 	eeprom_write_byte(0,startups);
-	printf_P(PSTR("%d bootups recorded\n"),startups);
+	start_tx_packet(&main_packet,0,0);
+	char buffer[20];
+	snprintf_P(buffer,20,PSTR("%d bootups recorded\n"),startups);
+	packet_append_string(&main_packet,buffer);
+	packet_end_send(&main_packet);
 	_delay_ms(1100);
 	printf("+++");
 	sei();
 	OK_WAIT;
 	printf_P(PSTR("ATSM2\r"));
+	OK_WAIT;
+	printf_P(PSTR("ATAP1\r"));
 	OK_WAIT;
 	printf_P(PSTR("ATCN\r"));
 #ifdef ignore_this_code
@@ -125,19 +141,28 @@ void do_dump_sensors() {
 	XBEE_ON;
 	_delay_ms(10);
 	int x,y;
-	printf("%d sensors\n",nSensors);
+	start_tx_packet(&main_packet,0,0);
+	char buffer[5];
+	snprintf(buffer,5,"%d",nSensors);
+	packet_append_string(&main_packet,buffer);
+	packet_append_string(&main_packet," sensors\n");
+	packet_end_send(&main_packet);
 	for (y=0; y < nSensors;y++) {
-		printf("sensor %d ",y);
-		for (x=0; x < 8; x++) {
-			printf("%02x ",gSensorIDs[y][x]);
-		}
-		putchar('\n');
 		_delay_ms(5);
+		start_tx_packet(&main_packet,0,0);
+		packet_append_string(&main_packet,"sensor ");
+		snprintf(buffer,5,"%d ",y);
+		packet_append_string(&main_packet,buffer);
+		for (x=0; x < 8; x++) {
+			snprintf(buffer,5,"%02x ",gSensorIDs[y][x]);
+			packet_append_string(&main_packet,buffer);
+		}
+		packet_append_string(&main_packet,"\n");
+		packet_end_send(&main_packet);
 	}
 	#ifdef PARASITE
 	printf("parasite mode %d\n",parasite_mode);
 	#endif
-	printf("done\n");
 	state &= ~dump;
 }
 void adc_on() {
@@ -157,15 +182,21 @@ int main(void) {
 	clock_prescale_set(clock_div_2);
 	init();
 	if ((old_mcusr & (1<<BORF)) & ((old_mcusr & (1<<PORF)) == 0)) {
-		printf_P(PSTR("last reset caused by code %2d, halting\n"),old_mcusr);
+		start_tx_packet(&main_packet,0,0);
+		packet_append_string(&main_packet,"last reset caused by code %2d, halting\n"); //),old_mcusr); FIXME
+		packet_end_send(&main_packet);
 		while(1) {
 			wdt_delay();
 			_delay_ms(100);
 		}
 	}
-	printf_P(PSTR("last reset caused by code %2d\n"),old_mcusr);
+	char buffer[5];
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"last reset caused by code ");
+	snprintf(buffer,5,"%2d\n",old_mcusr);
+	packet_append_string(&main_packet,buffer);
+	packet_end_send(&main_packet);
 
-	//nSensors = scan_sensors();	
 	// repeat forever
 	sei();
 	while (1) {
@@ -190,7 +221,9 @@ void check_temps() {
 	if (ret != DS18X20_OK) {
 		XBEE_ON;
 		_delay_ms(10);
-		puts_P(PSTR("start fail"));
+		start_tx_packet(&main_packet,0,0);
+		packet_append_string(&main_packet,"start fail\n");
+		packet_end_send(&main_packet);
 		state |= rescan;
 		return;
 	}
@@ -206,16 +239,19 @@ void check_temps() {
 	}
 	XBEE_ON;
 	_delay_ms(10);
-	printf("s r ");
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"s r ");
 	uint8_t check = 0;
+	char buffer[15];
 	for (x = 0; x < nSensors; x++) {
 		if (subzero[x]) putchar('-'); //fputc('-',&mystdout);
-		printf("%d %d ",cel[x],cel_frac_bits[x]);
-		//printf("%d %d ",cel[x],cel_frac_bits[x]);
+		snprintf(buffer,15,"%d %d ",cel[x],cel_frac_bits[x]);
+		packet_append_string(&main_packet,buffer);
 		check += cel[x];
-		//check += cel_frac_bits[x];
 	}
-	printf("c %d %d e\n",check,adc_value);
+	snprintf(buffer,15,"c %d %d e\n",check,adc_value);
+	packet_append_string(&main_packet,buffer);
+	packet_end_send(&main_packet);
 }
 #ifdef SORT
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
@@ -240,12 +276,12 @@ uint8_t search_sensors(void) {
 		DS18X20_find_sensor( &diff, &id[0] );
                 
                 if( diff == OW_PRESENCE_ERR ) {
-			printf("presence err %x\n",diff);
+			//printf("presence err %x\n",diff);
                         break;
                 }
                 
                 if( diff == OW_DATA_ERR ) {
-			printf("data error\r\n");
+			//printf("data error\r\n");
                         break;
                 }
                 
@@ -283,7 +319,7 @@ uint8_t search_sensors(void) {
         return nSensors;
 }
 #ifdef PARASITE
-void check_parasite() {
+void check_parasite() { FIXME
 	int x;
 	parasite_mode = DS18X20_POWER_EXTERN;
 	printf("p ");
@@ -301,11 +337,19 @@ void check_parasite() {
 int scan_sensors() {
 	XBEE_ON;
 	_delay_ms(10);
-	printf("rescanning for sensors\n");
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"rescanning for sensors\n");
+	packet_end_send(&main_packet);
 	int nSensors = 0;
 	while (!nSensors) {
 		nSensors = search_sensors();
-		printf("found %d sensors\r\n",nSensors);
+		start_tx_packet(&main_packet,0,0);
+		packet_append_string(&main_packet,"found ");
+		char buffer[4];
+		snprintf(buffer,4,"%d",nSensors);
+		packet_append_string(&main_packet,buffer);
+		packet_append_string(&main_packet," sensors\n");
+		packet_end_send(&main_packet);
 		if (!nSensors) _delay_ms(100);
 	}
 	#ifdef PARASITE
