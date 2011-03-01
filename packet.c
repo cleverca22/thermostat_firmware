@@ -19,6 +19,11 @@ int packet_append_string(xbee_packet *pkt,char * string) {
 	pkt->length_l = pkt->length_l + size;
 	return size;
 }
+int packet_append_string_P(xbee_packet *pkt,char * string) {
+	int size = strlen(string);
+	strcpy_P(&(pkt->data[pkt->length_l]),string);
+	pkt->length_l = pkt->length_l + size;
+}
 void packet_end(xbee_packet *pkt) {
 	int x;
 	uint8_t checksum = 0;
@@ -52,3 +57,17 @@ void start_tx_packet(xbee_packet *pkt,uint16_t addr,uint8_t options) {
 	packet_append_byte(pkt,addr && 0xff);// dest l
 	packet_append_byte(pkt,options);
 }
+void send_string(char* string) {
+	xbee_packet pkt;
+	start_tx_packet(&pkt,0,0);
+	packet_append_string(&pkt,string);
+	packet_end_send(&pkt);
+}
+void send_string_P(char* string) {
+	xbee_packet pkt;
+	start_tx_packet(&pkt,0,0);
+	packet_append_string_P(&pkt,string);
+	packet_end_send(&pkt);
+}
+
+xbee_packet main_packet;

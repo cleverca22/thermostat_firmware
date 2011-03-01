@@ -11,6 +11,7 @@
 #include "onewire.h"
 #include "ds18x20.h"
 #include "packet.h"
+#include "main.h"
 
 #define NO_PARASITE
 
@@ -33,8 +34,7 @@ void check_temps();
 enum my_flags { rescan=0x1, dump=0x2 };
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
 volatile uint8_t OK; // make this into a bit-field
-uint8_t stack_mark; // FIXME, must be at end of .bss
-xbee_packet main_packet,isr_packet;
+xbee_packet isr_packet;
 
 
 EMPTY_INTERRUPT(WDT_vect);
@@ -56,8 +56,8 @@ ISR(USART_RX_vect) {
 			break;
 		default:
 			start_tx_packet(&isr_packet,0,0);
-			packet_append_string(&isr_packet,"isr read in ");
-			snprintf(buffer,12,"%c(%d) %d\n",tmp,tmp,status);
+			packet_append_string_P(&isr_packet,PSTR("isr read in "));
+			snprintf_P(buffer,12,PSTR("%c(%d) %d\n"),tmp,tmp,status);
 			packet_append_string(&isr_packet,buffer);
 			packet_end_send(&isr_packet);
 	}
@@ -70,17 +70,15 @@ void adc_init() {
 	PORTC &= ~_BV(PC0);
 }
 #define OK_WAIT while (OK == 0) {} OK=0
+uint8_t startups;
 void init() {
 	PRR = _BV(PRTWI) | _BV(PRTIM2) | _BV(PRTIM0) | _BV(PRTIM1) | _BV(PRSPI); // min
-	uint8_t startups;
 	PORTC &= ~_BV(PC4); // min
 	XBEE_ON;
 	USART_Init(); // min
 	stdout = &mystdout;
 	_delay_ms(5);
-	start_tx_packet(&main_packet,0,0);
-	packet_append_string(&main_packet,"serial port online\n");
-	packet_end_send(&main_packet);
+	send_string_P(PSTR("serial port online\n"));
 
 
 	adc_init();
@@ -90,6 +88,7 @@ void init() {
 	start_tx_packet(&main_packet,0,0);
 	char buffer[20];
 	snprintf_P(buffer,20,PSTR("%d bootups recorded\n"),startups);
+	stack_mark = startups;
 	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
 	_delay_ms(1100);
@@ -143,9 +142,9 @@ void do_dump_sensors() {
 	int x,y;
 	start_tx_packet(&main_packet,0,0);
 	char buffer[5];
-	snprintf(buffer,5,"%d",nSensors);
+	snprintf(buffer,5,"%d ",nSensors);
 	packet_append_string(&main_packet,buffer);
-	packet_append_string(&main_packet," sensors\n");
+	packet_append_string_P(&main_packet,PSTR("sensors\n"));
 	packet_end_send(&main_packet);
 	for (y=0; y < nSensors;y++) {
 		_delay_ms(5);
@@ -157,7 +156,7 @@ void do_dump_sensors() {
 			snprintf(buffer,5,"%02x ",gSensorIDs[y][x]);
 			packet_append_string(&main_packet,buffer);
 		}
-		packet_append_string(&main_packet,"\n");
+		packet_append_byte(&main_packet,'\n');
 		packet_end_send(&main_packet);
 	}
 	#ifdef PARASITE
@@ -183,7 +182,7 @@ int main(void) {
 	init();
 	if ((old_mcusr & (1<<BORF)) & ((old_mcusr & (1<<PORF)) == 0)) {
 		start_tx_packet(&main_packet,0,0);
-		packet_append_string(&main_packet,"last reset caused by code %2d, halting\n"); //),old_mcusr); FIXME
+		packet_append_string_P(&main_packet,PSTR("last reset caused by code %2d, halting\n")); //),old_mcusr); FIXME
 		packet_end_send(&main_packet);
 		while(1) {
 			wdt_delay();
@@ -192,7 +191,7 @@ int main(void) {
 	}
 	char buffer[5];
 	start_tx_packet(&main_packet,0,0);
-	packet_append_string(&main_packet,"last reset caused by code ");
+	packet_append_string_P(&main_packet,PSTR("last reset caused by code "));
 	snprintf(buffer,5,"%2d\n",old_mcusr);
 	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
@@ -200,6 +199,12 @@ int main(void) {
 	// repeat forever
 	sei();
 	while (1) {
+		if (stack_mark != startups) {
+			while (1) {
+				send_string("stack overflow!!!\n");
+				_delay_ms(1000);
+			}
+		}
 		if (state & rescan) nSensors = scan_sensors();
 		if (state & dump) do_dump_sensors();
 		check_temps();
@@ -221,9 +226,7 @@ void check_temps() {
 	if (ret != DS18X20_OK) {
 		XBEE_ON;
 		_delay_ms(10);
-		start_tx_packet(&main_packet,0,0);
-		packet_append_string(&main_packet,"start fail\n");
-		packet_end_send(&main_packet);
+		send_string("start fail\n");
 		state |= rescan;
 		return;
 	}
