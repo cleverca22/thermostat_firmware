@@ -2,8 +2,6 @@
 #include <avr/io.h>
 #include "my_uart.h"
 
-uint8_t retransmit_flag = FALSE;
-
 void USART_Transmit( unsigned char data ) {
 	/* Wait for empty transmit buffer */
 	while ( !( UCSR0A & (1<<UDRE0)) ) ;

@@ -11,11 +11,15 @@
 #include "onewire.h"
 #include "ds18x20.h"
 
+#define NO_PARASITE
+
 void display_number(int number);
 #define MAXSENSORS 12
 uint8_t gSensorIDs[MAXSENSORS][OW_ROMCODE_SIZE];
 int nSensors = 0;
+#ifdef PARASITE
 uint8_t parasite_mode;
+#endif
 static FILE mystdout = FDEV_SETUP_STREAM(USART_Transmit, getch,_FDEV_SETUP_RW);
 
 #define XBEE_ON DDRC |= _BV(PC4)
@@ -25,22 +29,26 @@ uint8_t search_sensors(void);
 int scan_sensors();
 void check_temps();
 // flags
-volatile uint8_t rescan_sensors = 1;
-volatile uint8_t check_temp;
-volatile uint8_t dump_sensors;
+enum my_flags { rescan=0x1, dump=0x2 };
+volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
+volatile uint8_t OK; // make this into a bit-field
 
 
 EMPTY_INTERRUPT(WDT_vect);
 
 ISR(USART_RX_vect) {
+	static uint8_t uart_state = 0;
 	unsigned char status = UCSR0A;
 	unsigned char tmp = getch();
+	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; return; }
+	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; return; }
+	if ((tmp == '\r') && (uart_state == 2)) { OK=1; return; }
 	switch (tmp) {
 		case '1':
-			rescan_sensors = 1;
+			state |= rescan;
 			break;
 		case '2':
-			dump_sensors = 1;
+			state |= dump;
 			break;
 		default:
 			printf_P(PSTR("isr read in %c(%d) %d\n"),tmp,tmp,status);
@@ -53,6 +61,7 @@ void adc_init() {
 	DDRC &= ~_BV(PC0);
 	PORTC &= ~_BV(PC0);
 }
+#define OK_WAIT while (OK == 0) {} OK=0
 void init() {
 	PRR = _BV(PRTWI) | _BV(PRTIM2) | _BV(PRTIM0) | _BV(PRTIM1) | _BV(PRSPI); // min
 	uint8_t startups;
@@ -71,17 +80,11 @@ void init() {
 	printf_P(PSTR("%d bootups recorded\n"),startups);
 	_delay_ms(1100);
 	printf("+++");
-	_delay_ms(1100);
-	printf("ATSM2\r");
-	_delay_ms(10);
-	printf("ATCN\r");
-	// disable various things
-	//power_adc_disable();
-	//power_spi_disable();
-	//power_timer0_disable();
-	//power_timer1_disable();
-	//power_timer2_disable();
-	//power_twi_disable();
+	sei();
+	OK_WAIT;
+	printf_P(PSTR("ATSM2\r"));
+	OK_WAIT;
+	printf_P(PSTR("ATCN\r"));
 #ifdef ignore_this_code
 	SPI_MasterInit();
 #endif
@@ -126,19 +129,24 @@ void do_dump_sensors() {
 	for (y=0; y < nSensors;y++) {
 		printf("sensor %d ",y);
 		for (x=0; x < 8; x++) {
-			printf("%02x",gSensorIDs[y][x]);
+			printf("%02x ",gSensorIDs[y][x]);
 		}
 		putchar('\n');
+		_delay_ms(5);
 	}
+	#ifdef PARASITE
 	printf("parasite mode %d\n",parasite_mode);
+	#endif
 	printf("done\n");
-	dump_sensors = 0;
+	state &= ~dump;
 }
 void adc_on() {
+	power_adc_enable();
 	ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS0);
 }
 void adc_off() {
 	ADCSRA = _BV(ADPS2) | _BV(ADPS0);
+	power_adc_disable();
 }
 int main(void) {
 	char old_mcusr;
@@ -149,7 +157,7 @@ int main(void) {
 	clock_prescale_set(clock_div_2);
 	init();
 	if ((old_mcusr & (1<<BORF)) & ((old_mcusr & (1<<PORF)) == 0)) {
-		printf("last reset caused by code %2d, halting\r\n",old_mcusr);
+		printf_P(PSTR("last reset caused by code %2d, halting\n"),old_mcusr);
 		while(1) {
 			wdt_delay();
 			_delay_ms(100);
@@ -161,35 +169,39 @@ int main(void) {
 	// repeat forever
 	sei();
 	while (1) {
-		adc_on();
-		if (rescan_sensors) nSensors = scan_sensors();
-		if (dump_sensors) do_dump_sensors();
+		if (state & rescan) nSensors = scan_sensors();
+		if (state & dump) do_dump_sensors();
 		check_temps();
-		adc_off();
 		XBEE_OFF;
 		wdt_delay();
 	}
 }
 void check_temps() {
-	int x;
+	unsigned int x;
 	uint8_t ret;
 	uint8_t subzero[MAXSENSORS],cel[MAXSENSORS],cel_frac_bits[MAXSENSORS];
+	adc_on();
+	#ifdef PARASITE
 	ret = DS18X20_start_meas(parasite_mode, NULL );
+	#else
+	ret = DS18X20_start_meas(DS18X20_POWER_EXTERN,NULL);
+	#endif
 	ADCSRA |= _BV(ADSC);
-	uint16_t adc_value = ADC;
 	if (ret != DS18X20_OK) {
 		XBEE_ON;
 		_delay_ms(10);
-		printf("s %d fail e\n",ret);
-		rescan_sensors = 1;
+		puts_P(PSTR("start fail"));
+		state |= rescan;
 		return;
 	}
 	_delay_ms(DS18B20_TCONV_12BIT);
+	uint16_t adc_value = ADC;
+	adc_off();
 	for (x=0; x < nSensors;x++) {
 		ret = DS18X20_read_meas(gSensorIDs[x],&subzero[x], &cel[x], &cel_frac_bits[x]);
 		if (ret != DS18X20_OK) {
 			subzero[x] = cel[x] = cel_frac_bits[x] = 0;
-			rescan_sensors = 1;
+			state |= rescan;
 		}
 	}
 	XBEE_ON;
@@ -205,6 +217,7 @@ void check_temps() {
 	}
 	printf("c %d %d e\n",check,adc_value);
 }
+#ifdef SORT
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	unsigned int i;
 	for (i = 0; i < OW_ROMCODE_SIZE; i++) {
@@ -213,6 +226,7 @@ int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	}
 	return 0;
 }
+#endif
 uint8_t search_sensors(void) {
 	uint8_t i,j,k;
         uint8_t id[OW_ROMCODE_SIZE];
@@ -222,22 +236,28 @@ uint8_t search_sensors(void) {
         
         for (diff = OW_SEARCH_FIRST; 
                 diff != OW_LAST_DEVICE && nSensors < MAXSENSORS ; ) {
-                DS18X20_find_sensor( &diff, &id[0] );
+		// DS18X20_find_sensor is a wrapper to filter the list, but i have nothing to filter out
+		DS18X20_find_sensor( &diff, &id[0] );
                 
                 if( diff == OW_PRESENCE_ERR ) {
-						printf("presence err\r\n");
+			printf("presence err %x\n",diff);
                         break;
                 }
                 
                 if( diff == OW_DATA_ERR ) {
-						printf("data error\r\n");
+			printf("data error\r\n");
                         break;
                 }
                 
+#ifdef SORT
                 for (i=0;i<OW_ROMCODE_SIZE;i++) lSensorIDs[nSensors][i]=id[i];
+#else
+                for (i=0;i<OW_ROMCODE_SIZE;i++) gSensorIDs[nSensors][i]=id[i];
+#endif
                 
                 nSensors++;
         }
+#ifdef SORT
 		uint8_t lowest[OW_ROMCODE_SIZE];
 		int lowest_id = -1;
 		uint8_t used[MAXSENSORS];
@@ -258,9 +278,11 @@ uint8_t search_sensors(void) {
 			used[lowest_id] = 1;
 			reset_lowest = 1;
 		}
+#endif
         
         return nSensors;
 }
+#ifdef PARASITE
 void check_parasite() {
 	int x;
 	parasite_mode = DS18X20_POWER_EXTERN;
@@ -275,6 +297,7 @@ void check_parasite() {
 	}
 	printf(" e\n");
 }
+#endif
 int scan_sensors() {
 	XBEE_ON;
 	_delay_ms(10);
@@ -285,8 +308,9 @@ int scan_sensors() {
 		printf("found %d sensors\r\n",nSensors);
 		if (!nSensors) _delay_ms(100);
 	}
+	#ifdef PARASITE
 	check_parasite();
-	rescan_sensors = 0;
-	dump_sensors = 1;
+	#endif
+	state = dump;
 	return nSensors;
 }

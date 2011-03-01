@@ -3,7 +3,8 @@ CHIP_GCC=atmega168
 F_CPU=4000000UL
 BAUD=9600
 
-OBJECTS=main.o my_uart.o onewire.o ds18x20.o crc8.o
+DS18B20=ds18x20/DS18X20_get_power_status.o ds18x20.o ds18x20/DS18X20_read_meas.o ds18x20/DS18X20_meas_to_cel.o ds18x20/DS18X20_find_sensor.o
+OBJECTS=main.o my_uart.o onewire.o ${DS18B20} crc8.o
 .SECONDARY: main.S my_uart.S
 
 CFLAGS=-mmcu=${CHIP_GCC} -Os -DF_CPU=${F_CPU} -DBAUD=${BAUD}
@@ -18,11 +19,12 @@ avr.bin: a.out
 	avr-objcopy -j .text -j .data -O binary a.out avr.bin
 
 a.out: ${OBJECTS}
-	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,--cref
+	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min
 
 size: a.out ${OBJECTS}
 	avr-size -t ${OBJECTS}
 	avr-size a.out
+	@echo max text+data: 16384, max data+bss: 1024
 	ls -l a.out ${OBJECTS}
 
 %.S: %.c *.h
