@@ -61,12 +61,15 @@ void packet_append_byte(xbee_packet *pkt,uint8_t byte) {
 	pkt->data[pkt->length_l] = byte;
 	pkt->length_l++;
 }
-void start_tx_packet(xbee_packet *pkt,uint16_t addr,uint8_t options) {
-	start_packet(pkt,0x01);
-	packet_append_byte(pkt,0x00);// frameid
-	packet_append_byte(pkt,(addr << 8) && 0xff);// dest h
-	packet_append_byte(pkt,addr && 0xff);// dest l
-	packet_append_byte(pkt,options);
+void start_tx_packet(xbee_packet *pkt,uint16_t addr,uint8_t options) { // size 21 (20)
+	pkt->start_byte = 0x7e;
+	pkt->length_h = 0;
+	pkt->length_l = 5;
+	pkt->data[0] = 0x01;
+	pkt->data[1] = 0x00;// frameid
+	pkt->data[2] = (addr << 8) && 0xff;// dest h
+	pkt->data[3] = addr && 0xff;// dest l
+	pkt->data[4] = options;
 }
 void send_string(char* string) {
 	xbee_packet pkt;
