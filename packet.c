@@ -8,12 +8,7 @@ void start_packet(xbee_packet *pkt,uint8_t type) {
 }
 int packet_append_string(xbee_packet *pkt,char * string) {
 	int size = strlen(string);
-	int x,y;
-	y = 0;
-	for (x = pkt->length_l; x < (pkt->length_l + size); x++) {
-		pkt->data[x] = string[y];
-		y++;
-	}
+	memcpy(&(pkt->data[pkt->length_l]), string, size);
 	pkt->length_l = pkt->length_l + size;
 	return size;
 }
