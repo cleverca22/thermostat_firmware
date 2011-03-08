@@ -20,12 +20,12 @@ int packet_append_string(xbee_packet *pkt,char * string) {
 	return size;
 }
 int packet_append_string_P(xbee_packet *pkt,char * string) {
-	int size = strlen(string);
+	int size = strlen_P(string);
 	strcpy_P(&(pkt->data[pkt->length_l]),string);
 	pkt->length_l = pkt->length_l + size;
 }
 void packet_end(xbee_packet *pkt) {
-	int x;
+	uint8_t x;
 	uint8_t checksum = 0;
 	for (x = 0; x < pkt->length_l; x++) {
 		checksum += pkt->data[x];
@@ -33,13 +33,24 @@ void packet_end(xbee_packet *pkt) {
 	checksum = 0xff - checksum;
 	pkt->data[pkt->length_l] = checksum;
 }
+void inline packet_tx_byte(uint8_t byte) { // size 22(19)
+	switch (byte) {
+	case 0x7e:
+	case 0x7d:
+	case 0x11:
+	case 0x13:
+		USART_Transmit(0x7d);
+		byte = 0x20 ^ byte;
+	}
+	USART_Transmit(byte);
+}
 void packet_send(xbee_packet *pkt) {
 	USART_Transmit(pkt->start_byte);
-	USART_Transmit(pkt->length_h);
-	USART_Transmit(pkt->length_l);
+	uint8_t *hack;
+	hack = &(pkt->length_h);
 	int x;
-	for (x = 0; x <= pkt->length_l; x++) {
-		USART_Transmit(pkt->data[x]);
+	for (x = 0; x <= (pkt->length_l + 2); x++) {
+		packet_tx_byte(hack[x]);
 	}
 }
 void packet_end_send(xbee_packet *pkt) {
