@@ -3,8 +3,6 @@
 #include "my_uart.h"
 
 void start_packet(xbee_packet *pkt,uint8_t type) {
-	pkt->start_byte = 0x7e;
-	pkt->length_h = 0;
 	pkt->length_l = 0;
 	packet_append_byte(pkt,type);
 }
@@ -45,11 +43,12 @@ void inline packet_tx_byte(uint8_t byte) { // size 22(19)
 	USART_Transmit(byte);
 }
 void packet_send(xbee_packet *pkt) {
-	USART_Transmit(pkt->start_byte);
+	USART_Transmit(0x7e);
 	uint8_t *hack;
-	hack = &(pkt->length_h);
+	hack = &(pkt->length_l);
 	int x;
-	for (x = 0; x <= (pkt->length_l + 2); x++) {
+	USART_Transmit(0); // length high byte
+	for (x = 0; x <= (pkt->length_l + 1); x++) {
 		packet_tx_byte(hack[x]);
 	}
 }
@@ -62,8 +61,6 @@ void packet_append_byte(xbee_packet *pkt,uint8_t byte) {
 	pkt->length_l++;
 }
 void start_tx_packet(xbee_packet *pkt,uint16_t addr,uint8_t options) { // size 21 (20)
-	pkt->start_byte = 0x7e;
-	pkt->length_h = 0;
 	pkt->length_l = 5;
 	pkt->data[0] = 0x01;
 	pkt->data[1] = 0x00;// frameid

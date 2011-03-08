@@ -1,8 +1,6 @@
 #include <avr/io.h>
 
 typedef struct xbee_packet {
-	uint8_t start_byte;
-	uint8_t length_h;
 	uint8_t length_l;
 	char data[101];
 } xbee_packet;
