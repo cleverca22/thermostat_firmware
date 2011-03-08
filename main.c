@@ -85,6 +85,7 @@ void init() {
 	stdout = &mystdout;
 	_delay_ms(5);
 	send_string_P(PSTR("serial port online\n"));
+	_delay_ms(5);
 
 
 	adc_init();
@@ -94,7 +95,7 @@ void init() {
 	start_tx_packet(&main_packet,0,0);
 	char buffer[20];
 	snprintf_P(buffer,20,PSTR("%d bootups recorded\n"),startups);
-	stack_mark = startups;
+	__bss_end = startups;
 	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
 	_delay_ms(1100);
@@ -103,7 +104,7 @@ void init() {
 	OK_WAIT;
 	printf_P(PSTR("ATSM2\r"));
 	OK_WAIT;
-	printf_P(PSTR("ATAP1\r"));
+	printf_P(PSTR("ATAP2\r"));
 	OK_WAIT;
 	printf_P(PSTR("ATCN\r"));
 #ifdef ignore_this_code
@@ -153,7 +154,7 @@ void do_dump_sensors() {
 	packet_append_string(&main_packet,"sensors\n");
 	packet_end_send(&main_packet);
 	for (y=0; y < nSensors;y++) {
-		_delay_ms(5);
+		_delay_ms(10);
 		start_tx_packet(&main_packet,0,0);
 		packet_append_byte(&main_packet,0x00);
 		packet_append_byte(&main_packet,0x01);
@@ -164,7 +165,11 @@ void do_dump_sensors() {
 		packet_end_send(&main_packet);
 	}
 	#ifdef PARASITE
-	printf("parasite mode %d\n",parasite_mode);
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"parasite mode ");
+	snprintf(buffer,5,"%d\n",parasite_mode);
+	packet_append_string(&main_packet,buffer);
+	packet_end_send(&main_packet);
 	#endif
 	state &= ~dump;
 }
@@ -204,7 +209,7 @@ int main(void) {
 	sei();
 	int ret;
 	while (1) {
-		if (stack_mark != startups) {
+		if (__bss_end != startups) {
 			while (1) {
 				send_string("stack overflow!!!\n");
 				_delay_ms(1000);
@@ -216,11 +221,13 @@ int main(void) {
 			packet_append_string(&main_packet,"unknown bytes in serial buffer ");
 			int x;
 			for (x = 0; x < ser_buf_size; x++) {
-				packet_append_byte(&main_packet,serial_buffer[x]);
+				snprintf(buffer,5,"%x ",serial_buffer[x]);
+				packet_append_string(&main_packet,buffer);
 			}
 			packet_append_byte(&main_packet,'\n');
 			packet_end_send(&main_packet);
 			ser_buf_size = 0;
+			state |= dump;
 		}
 		sei();
 		if (state & rescan) nSensors = scan_sensors();
@@ -234,7 +241,7 @@ int check_temps() {
 	int main_return = 0;
 	unsigned int x;
 	uint8_t ret;
-	uint8_t subzero[MAXSENSORS],cel[MAXSENSORS],cel_frac_bits[MAXSENSORS];
+	uint8_t subzero,cel,cel_frac_bits;
 	adc_on();
 	#ifdef PARASITE
 	ret = DS18X20_start_meas(parasite_mode, NULL );
@@ -253,27 +260,26 @@ int check_temps() {
 	uint16_t adc_value = ADC;
 	if (adc_value == 1023) main_return = 1;
 	adc_off();
-	for (x=0; x < nSensors;x++) {
-		ret = DS18X20_read_meas(gSensorIDs[x],&subzero[x], &cel[x], &cel_frac_bits[x]);
-		if (ret != DS18X20_OK) {
-			subzero[x] = cel[x] = cel_frac_bits[x] = 0;
-			state |= rescan;
-		}
-	}
-	XBEE_ON;
-	_delay_ms(10);
 	start_tx_packet(&main_packet,0,0);
-	packet_append_string(&main_packet,"s r ");
-	uint8_t check = 0;
+	packet_append_string_P(&main_packet,PSTR("s r "));
 	char buffer[15];
-	for (x = 0; x < nSensors; x++) {
-		if (subzero[x]) putchar('-'); //fputc('-',&mystdout);
-		snprintf(buffer,15,"%d %d ",cel[x],cel_frac_bits[x]);
-		packet_append_string(&main_packet,buffer);
-		check += cel[x];
+	uint8_t check = 0;
+	for (x=0; x < nSensors;x++) {
+		ret = DS18X20_read_meas(gSensorIDs[x],&subzero, &cel, &cel_frac_bits);
+		if (ret == DS18X20_OK) {
+			if (subzero) packet_append_byte(&main_packet,'-');
+			snprintf(buffer,15,"%d %d ",cel,cel_frac_bits);
+			packet_append_string(&main_packet,buffer);
+			check += cel;
+		} else {
+			state |= rescan;
+			packet_append_string_P(&main_packet,PSTR("U U "));
+		}
 	}
 	snprintf(buffer,15,"c %d %d e\n",check,adc_value);
 	packet_append_string(&main_packet,buffer);
+	XBEE_ON;
+	_delay_ms(10);
 	packet_end_send(&main_packet);
 	return main_return;
 }
@@ -343,19 +349,23 @@ uint8_t search_sensors(void) {
         return nSensors;
 }
 #ifdef PARASITE
-void check_parasite() { FIXME
+void check_parasite() {
 	int x;
 	parasite_mode = DS18X20_POWER_EXTERN;
-	printf("p ");
+	start_tx_packet(&main_packet,0,0);
+	packet_append_string(&main_packet,"p ");
+	char buffer[4];
 	for (x = 0; x < nSensors; x++) {
 		int parasite = DS18X20_get_power_status(gSensorIDs[x]);
-		printf("%d ",parasite);
+		snprintf(buffer,4,"%d ",parasite);
+		packet_append_string(&main_packet,buffer);
 		if (parasite == DS18X20_POWER_PARASITE) {
 			parasite_mode = parasite;
-			return;
+			break;
 		}
 	}
-	printf(" e\n");
+	packet_append_string(&main_packet,"e\n");
+	packet_end_send(&main_packet);
 }
 #endif
 int scan_sensors() {

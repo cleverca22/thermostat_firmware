@@ -4,7 +4,7 @@ F_CPU=4000000UL
 BAUD=9600
 
 DS18B20=ds18x20/DS18X20_get_power_status.o ds18x20.o ds18x20/DS18X20_read_meas.o ds18x20/DS18X20_meas_to_cel.o ds18x20/DS18X20_find_sensor.o
-OBJECTS=packet.o main.o my_uart.o onewire.o ${DS18B20} crc8.o test.o
+OBJECTS=packet.o main.o my_uart.o onewire.o ${DS18B20} crc8.o
 .SECONDARY: main.S my_uart.S
 
 CFLAGS=-mmcu=${CHIP_GCC} -Os -DF_CPU=${F_CPU} -DBAUD=${BAUD}
@@ -19,15 +19,17 @@ avr.bin: a.out
 	avr-objcopy -j .text -j .data -O binary a.out avr.bin
 
 a.out: ${OBJECTS}
-	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min
+	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map
 
 size: a.out ${OBJECTS}
 	avr-size -t ${OBJECTS}
 	avr-size a.out
 	@echo max text+data: 16384, max data+bss: 1024
+	avr-nm a.out -S --size-sort|tail
 	ls -l a.out ${OBJECTS}
 
-%.S: %.c *.h
+%.asm: %.c *.h
+	#mv $@ $@.old
 	avr-gcc ${CFLAGS} -S $< -o $@
 
 program: avr.bin
@@ -55,4 +57,6 @@ fat_functions: a.out
 router_program: avr.bin
 	scp avr.bin newrouter:/home/clever/avr/avr.bin
 	ssh newrouter -t /usr/local/bin/avrdude -p ${CHIP} -U flash:w:/home/clever/avr/avr.bin -y -i 15
-main.o: main.c packet.h
+main.o: main.c packet.h main.h
+full_dump.lss: a.out
+	avr-objdump -h -S a.out > full_dump.lss
