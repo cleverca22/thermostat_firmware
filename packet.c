@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdarg.h>
 #include "packet.h"
 #include "my_uart.h"
 
@@ -75,5 +76,18 @@ void send_string_P(char* string) {
 	packet_append_string_P(&pkt,string);
 	packet_end_send(&pkt);
 }
-
+void packet_printf(xbee_packet *pkt, char *format, ...) {
+	va_list ap;
+	va_start(ap,format);
+	int size = vsnprintf(&(pkt->data[pkt->length_l]), 100 - pkt->length_l, format,ap);
+	va_end(ap);
+	pkt->length_l = pkt->length_l + size;
+}
+void packet_printf_P(xbee_packet *pkt, char *format, ...) {
+	va_list ap;
+	va_start(ap,format);
+	int size = vsnprintf_P(&(pkt->data[pkt->length_l]), 100 - pkt->length_l, format,ap);
+	va_end(ap);
+	pkt->length_l = pkt->length_l + size;
+}
 xbee_packet main_packet;

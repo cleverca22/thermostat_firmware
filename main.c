@@ -40,21 +40,22 @@ xbee_packet isr_packet;
 EMPTY_INTERRUPT(WDT_vect);
 volatile char serial_buffer[20];
 volatile uint8_t ser_buf_size;
+volatile xbee_packet rx_packet;
 
+void packet_recieved(xbee_packet *pkt);
 ISR(USART_RX_vect) {
 	static uint8_t uart_state = 0;
+	static uint8_t rx_state = 0,remaining_bytes,checksum;
 	unsigned char status = UCSR0A;
 	unsigned char tmp = getch();
-	char buffer[12];
-	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; return; }
-	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; return; }
-	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; return; }
+	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; }
+	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; }
+	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; }
 	switch (tmp) {
-		case '1':
-			state |= rescan;
-			break;
-		case '2':
-			state |= dump;
+		case 0x7e:
+			rx_packet.length_l = 0;
+			rx_state = 1;
+			checksum = 0;
 			break;
 		default:
 			//start_tx_packet(&isr_packet,0,0);
@@ -62,11 +63,66 @@ ISR(USART_RX_vect) {
 			//snprintf_P(buffer,12,PSTR("%c(%d) %d\n"),tmp,tmp,status);
 			//packet_append_string(&isr_packet,buffer);
 			//packet_end_send(&isr_packet);
+			switch (rx_state) {
+			case 1:// length h
+				if (tmp == 0) {
+					rx_state++;
+					break;
+				}
+				rx_state = 0;
+				goto err;
+			case 2:// length l
+				remaining_bytes = tmp;
+				rx_state++;
+				break;
+			case 3:// data
+				checksum += tmp;
+				rx_packet.data[rx_packet.length_l] = tmp;
+				rx_packet.length_l++;
+				remaining_bytes--;
+				if (remaining_bytes == 0) rx_state++;
+				break;
+			case 4:// checksum
+				checksum += tmp;
+				//start_tx_packet(&isr_packet,0,0);
+				//packet_append_string_P(&isr_packet,PSTR("isr read in "));
+				//snprintf_P(buffer,12,PSTR("%d %c\n"),rx_packet.length_l,rx_packet.data[5]);
+				//packet_append_string(&isr_packet,buffer);
+				//packet_end_send(&isr_packet);
+				if (checksum == 0xff) packet_recieved(&rx_packet);
+			}
+			return;
+err:
 			if (ser_buf_size < 20) {
 				serial_buffer[ser_buf_size] = tmp;
 				ser_buf_size++;
 			}
 	}
+}
+void packet_recieved(xbee_packet *pkt) {
+	switch ((uint8_t)pkt->data[0]) { // api type
+	case 0x81: // 16bit tx
+		if (pkt->length_l >= 6) {
+			switch (pkt->data[5]) {
+			case '1':
+				state |= rescan;
+				break;
+			case '2':
+				state |= dump;
+				break;
+			/*default:
+				send_string("unknown byte\n");*/
+			}
+		} /*else {
+			send_string("packet too short\n");
+		}*/
+		break;
+	default:
+		start_tx_packet(&isr_packet,0,0);
+		packet_printf_P(&isr_packet,PSTR("%d %x\n"),pkt->length_l,pkt->data[0]);
+		packet_end_send(&isr_packet);
+	}
+				
 }
 
 void adc_init() {
@@ -85,7 +141,6 @@ void init() {
 	stdout = &mystdout;
 	_delay_ms(5);
 	send_string_P(PSTR("serial port online\n"));
-	_delay_ms(5);
 
 
 	adc_init();
@@ -93,10 +148,8 @@ void init() {
 	startups++;
 	eeprom_write_byte(0,startups);
 	start_tx_packet(&main_packet,0,0);
-	char buffer[20];
-	snprintf_P(buffer,20,PSTR("%d bootups recorded\n"),startups);
+	packet_printf_P(&main_packet,PSTR("%d bootups recorded\n"),startups);
 	__bss_end = startups;
-	packet_append_string(&main_packet,buffer);
 	packet_end_send(&main_packet);
 	_delay_ms(1100);
 	printf("+++");
@@ -106,6 +159,7 @@ void init() {
 	OK_WAIT;
 	printf_P(PSTR("ATAP2\r"));
 	OK_WAIT;
+	ser_buf_size = 0; // empty the rx error buffer
 	printf_P(PSTR("ATCN\r"));
 #ifdef ignore_this_code
 	SPI_MasterInit();
@@ -146,21 +200,18 @@ void wdt_delay() {
 void do_dump_sensors() {
 	XBEE_ON;
 	_delay_ms(10);
-	int x,y;
+	uint8_t x,y;
 	start_tx_packet(&main_packet,0,0);
-	char buffer[5];
-	snprintf(buffer,5,"%d ",nSensors);
-	packet_append_string(&main_packet,buffer);
-	packet_append_string(&main_packet,"sensors\n");
+	packet_printf_P(&main_packet,PSTR("%d sensors\n"),nSensors);
 	packet_end_send(&main_packet);
 	for (y=0; y < nSensors;y++) {
-		_delay_ms(10);
 		start_tx_packet(&main_packet,0,0);
 		packet_append_byte(&main_packet,0x00);
 		packet_append_byte(&main_packet,0x01);
 		packet_append_byte(&main_packet,y);
 		for (x=0; x < 8; x++) {
-			packet_append_byte(&main_packet,gSensorIDs[y][x]);
+			packet_append_byte(&main_packet,gSensorIDs[y][x] ^ 0x20); // ugly hack
+			// 0x11 upsets the xbee, even when escaping properly
 		}
 		packet_end_send(&main_packet);
 	}
@@ -191,18 +242,15 @@ int main(void) {
 	init();
 	if ((old_mcusr & (1<<BORF)) & ((old_mcusr & (1<<PORF)) == 0)) {
 		start_tx_packet(&main_packet,0,0);
-		packet_append_string_P(&main_packet,PSTR("last reset caused by code %2d, halting\n")); //),old_mcusr); FIXME
+		packet_printf_P(&main_packet,PSTR("last reset caused by code %2d, halting\n"),old_mcusr);
 		packet_end_send(&main_packet);
 		while(1) {
 			wdt_delay();
 			_delay_ms(100);
 		}
 	}
-	char buffer[5];
 	start_tx_packet(&main_packet,0,0);
-	packet_append_string(&main_packet,"last reset caused by code ");
-	snprintf(buffer,5,"%2d\n",old_mcusr);
-	packet_append_string(&main_packet,buffer);
+	packet_printf(&main_packet,"last reset caused by code %2d\n",old_mcusr);
 	packet_end_send(&main_packet);
 
 	// repeat forever
@@ -219,15 +267,15 @@ int main(void) {
 		if (ser_buf_size) {
 			start_tx_packet(&main_packet,0,0);
 			packet_append_string(&main_packet,"unknown bytes in serial buffer ");
-			int x;
+			uint8_t x;
 			for (x = 0; x < ser_buf_size; x++) {
-				snprintf(buffer,5,"%x ",serial_buffer[x]);
-				packet_append_string(&main_packet,buffer);
+				packet_printf(&main_packet,"%x ",(uint8_t)serial_buffer[x]);
 			}
 			packet_append_byte(&main_packet,'\n');
-			packet_end_send(&main_packet);
 			ser_buf_size = 0;
 			state |= dump;
+			sei();
+			packet_end_send(&main_packet);
 		}
 		sei();
 		if (state & rescan) nSensors = scan_sensors();
@@ -239,7 +287,7 @@ int main(void) {
 }
 int check_temps() {
 	int main_return = 0;
-	unsigned int x;
+	uint8_t x;
 	uint8_t ret;
 	uint8_t subzero,cel,cel_frac_bits;
 	adc_on();
@@ -248,36 +296,33 @@ int check_temps() {
 	#else
 	ret = DS18X20_start_meas(DS18X20_POWER_EXTERN,NULL);
 	#endif
-	ADCSRA |= _BV(ADSC);
 	if (ret != DS18X20_OK) {
 		XBEE_ON;
 		_delay_ms(10);
-		send_string("start fail\n");
+		send_string_P(PSTR("start fail\n"));
 		state |= rescan;
 		return;
 	}
+	ADCSRA |= _BV(ADSC);
 	_delay_ms(DS18B20_TCONV_12BIT);
 	uint16_t adc_value = ADC;
 	if (adc_value == 1023) main_return = 1;
 	adc_off();
 	start_tx_packet(&main_packet,0,0);
 	packet_append_string_P(&main_packet,PSTR("s r "));
-	char buffer[15];
 	uint8_t check = 0;
 	for (x=0; x < nSensors;x++) {
 		ret = DS18X20_read_meas(gSensorIDs[x],&subzero, &cel, &cel_frac_bits);
 		if (ret == DS18X20_OK) {
 			if (subzero) packet_append_byte(&main_packet,'-');
-			snprintf(buffer,15,"%d %d ",cel,cel_frac_bits);
-			packet_append_string(&main_packet,buffer);
+			packet_printf(&main_packet,"%d %d ",cel,cel_frac_bits);
 			check += cel;
 		} else {
 			state |= rescan;
 			packet_append_string_P(&main_packet,PSTR("U U "));
 		}
 	}
-	snprintf(buffer,15,"c %d %d e\n",check,adc_value);
-	packet_append_string(&main_packet,buffer);
+	packet_printf(&main_packet,"c %d %d e\n",check,adc_value);
 	XBEE_ON;
 	_delay_ms(10);
 	packet_end_send(&main_packet);
@@ -371,18 +416,12 @@ void check_parasite() {
 int scan_sensors() {
 	XBEE_ON;
 	_delay_ms(10);
-	start_tx_packet(&main_packet,0,0);
-	packet_append_string(&main_packet,"rescanning for sensors\n");
-	packet_end_send(&main_packet);
+	send_string_P(PSTR("rescanning for sensors\n"));
 	int nSensors = 0;
 	while (!nSensors) {
 		nSensors = search_sensors();
 		start_tx_packet(&main_packet,0,0);
-		packet_append_string(&main_packet,"found ");
-		char buffer[4];
-		snprintf(buffer,4,"%d",nSensors);
-		packet_append_string(&main_packet,buffer);
-		packet_append_string(&main_packet," sensors\n");
+		packet_printf_P(&main_packet,PSTR("found %d sensors\n"),nSensors);
 		packet_end_send(&main_packet);
 		if (!nSensors) _delay_ms(100);
 	}
