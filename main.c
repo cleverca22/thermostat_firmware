@@ -30,6 +30,7 @@ static FILE mystdout = FDEV_SETUP_STREAM(USART_Transmit, getch,_FDEV_SETUP_RW);
 uint8_t search_sensors(void);
 int scan_sensors();
 int check_temps();
+uint8_t check_count = 0;
 // flags
 enum my_flags { rescan=0x1, dump=0x2 };
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
@@ -48,6 +49,18 @@ ISR(USART_RX_vect) {
 	static uint8_t rx_state = 0,remaining_bytes,checksum;
 	unsigned char status = UCSR0A;
 	unsigned char tmp = getch();
+
+	switch (tmp) {
+		case '1':
+			state |= rescan;
+			break;
+		case '2':
+			state |= dump;
+			break;
+		default:
+			printf("unknown byte %d\n",tmp);
+	}
+	return;
 	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; }
 	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; }
 	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; }
@@ -151,16 +164,17 @@ void init() {
 	packet_printf_P(&main_packet,PSTR("%d bootups recorded\n"),startups);
 	__bss_end = startups;
 	packet_end_send(&main_packet);
-	_delay_ms(1100);
-	printf("+++");
+	//_delay_ms(1100);
+	//printf("+++");
 	sei();
-	OK_WAIT;
+	/*OK_WAIT;
 	printf_P(PSTR("ATSM2\r"));
 	OK_WAIT;
-	printf_P(PSTR("ATAP2\r"));
-	OK_WAIT;
+	printf_P(PSTR("ATAP1\r"));
+	OK_WAIT;*/
 	ser_buf_size = 0; // empty the rx error buffer
-	printf_P(PSTR("ATCN\r"));
+	//printf_P(PSTR("ATCN\r"));
+	send_string_P(PSTR("entered api1 mode\n"));
 #ifdef ignore_this_code
 	SPI_MasterInit();
 #endif
@@ -198,22 +212,16 @@ void wdt_delay() {
 		//_delay_ms(20);
 }
 void do_dump_sensors() {
-	XBEE_ON;
 	_delay_ms(10);
 	uint8_t x,y;
-	start_tx_packet(&main_packet,0,0);
-	packet_printf_P(&main_packet,PSTR("%d sensors\n"),nSensors);
-	packet_end_send(&main_packet);
+	printf("\n%d sensors\n",nSensors);
 	for (y=0; y < nSensors;y++) {
-		start_tx_packet(&main_packet,0,0);
-		packet_append_byte(&main_packet,0x00);
-		packet_append_byte(&main_packet,0x01);
-		packet_append_byte(&main_packet,y);
+		printf_P(PSTR("A %d "),(uint16_t)y);
 		for (x=0; x < 8; x++) {
-			packet_append_byte(&main_packet,gSensorIDs[y][x] ^ 0x20); // ugly hack
-			// 0x11 upsets the xbee, even when escaping properly
+			printf_P(PSTR("%x "),gSensorIDs[y][x]);
 		}
-		packet_end_send(&main_packet);
+		printf("E\n");
+		_delay_ms(30);
 	}
 	#ifdef PARASITE
 	start_tx_packet(&main_packet,0,0);
@@ -281,7 +289,7 @@ int main(void) {
 		if (state & rescan) nSensors = scan_sensors();
 		if (state & dump) do_dump_sensors();
 		ret = check_temps();
-		if (ret != 1) XBEE_OFF;
+		//if (ret != 1) XBEE_OFF;
 		wdt_delay();
 	}
 }
@@ -310,22 +318,34 @@ int check_temps() {
 	adc_off();
 	start_tx_packet(&main_packet,0,0);
 	packet_append_string_P(&main_packet,PSTR("s r "));
-	uint8_t check = 0;
+	//xbee_packet bin_packet;
+	//start_tx_packet(&bin_packet,0,0);
+	//packet_append_byte(&bin_packet,0x00); // binary flag
+	//packet_append_byte(&bin_packet,0x02); // temp dump
+	//packet_append_byte(&bin_packet,nSensors);
+	//packet_append_byte(&bin_packet,(adc_value >> 8) & 0xff);
+	//packet_append_byte(&bin_packet,adc_value & 0xff);
 	for (x=0; x < nSensors;x++) {
+		#if 0
 		ret = DS18X20_read_meas(gSensorIDs[x],&subzero, &cel, &cel_frac_bits);
+		#endif
+		uint8_t scratchpad[DS18X20_SP_SIZE];
+		ret = DS18X20_read_scratchpad(gSensorIDs[x],scratchpad);
+//memcpy(&(bin_packet.data[bin_packet.length_l]), scratchpad,2);
+//bin_packet.length_l = bin_packet.length_l + 2;
+		DS18X20_meas_to_cel(gSensorIDs[x][0], scratchpad, &subzero, &cel, &cel_frac_bits);
 		if (ret == DS18X20_OK) {
 			if (subzero) packet_append_byte(&main_packet,'-');
 			packet_printf(&main_packet,"%d %d ",cel,cel_frac_bits);
-			check += cel;
 		} else {
 			state |= rescan;
 			packet_append_string_P(&main_packet,PSTR("U U "));
 		}
 	}
-	packet_printf(&main_packet,"c %d %d e\n",check,adc_value);
-	XBEE_ON;
-	_delay_ms(10);
+	packet_printf(&main_packet,"c %d %d e\n",adc_value,check_count++);
 	packet_end_send(&main_packet);
+	_delay_ms(100);
+	//packet_end_send(&bin_packet);
 	return main_return;
 }
 #ifdef SORT

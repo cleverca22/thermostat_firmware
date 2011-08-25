@@ -5,8 +5,8 @@
 void USART_Transmit( unsigned char data ) {
 	/* Wait for empty transmit buffer */
 	while ( !( UCSR0A & (1<<UDRE0)) ) ;
-    /* Put data into buffer, sends the data */
-    UDR0 = data;
+	/* Put data into buffer, sends the data */
+	UDR0 = data;
 }
 /* Send some data to the serial port */
 void USART_tx_string( char *data ) {
