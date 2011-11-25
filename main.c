@@ -44,6 +44,7 @@ volatile uint8_t ser_buf_size;
 volatile xbee_packet rx_packet;
 
 void packet_recieved(xbee_packet *pkt);
+void sensor_scanned(uint8_t addr[OW_ROMCODE_SIZE],uint8_t subzero,uint16_t raw_temp);
 ISR(USART_RX_vect) {
 	static uint8_t uart_state = 0;
 	static uint8_t rx_state = 0,remaining_bytes,checksum;
@@ -61,6 +62,7 @@ ISR(USART_RX_vect) {
 			printf("unknown byte %d\n",tmp);
 	}
 	return;
+/*
 	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; }
 	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; }
 	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; }
@@ -111,6 +113,7 @@ err:
 				ser_buf_size++;
 			}
 	}
+*/
 }
 void packet_recieved(xbee_packet *pkt) {
 	switch ((uint8_t)pkt->data[0]) { // api type
@@ -144,6 +147,18 @@ void adc_init() {
 	DDRC &= ~_BV(PC0);
 	PORTC &= ~_BV(PC0);
 }
+void set_zone1(unsigned char on) { // livingroom, kitchen
+	static uint8_t last_state = 0;
+	if (on) {
+		PORTB |= _BV(PB1);
+		if (last_state != 1) printf("turning livingroom on\n");
+		last_state = 1;
+	} else {
+		PORTB &= ~_BV(PB1);
+		if (last_state != 0) printf("turning livingroom off\n");
+		last_state = 0;
+	}
+}
 #define OK_WAIT while (OK == 0) {} OK=0
 uint8_t startups;
 void init() {
@@ -175,6 +190,9 @@ void init() {
 	ser_buf_size = 0; // empty the rx error buffer
 	//printf_P(PSTR("ATCN\r"));
 	send_string_P(PSTR("entered api1 mode\n"));
+
+	DDRB |= _BV(PB1); // zone 1 control is output
+	set_zone1(0); // zone 1 off by default
 #ifdef ignore_this_code
 	SPI_MasterInit();
 #endif
@@ -331,10 +349,21 @@ int check_temps() {
 		#endif
 		uint8_t scratchpad[DS18X20_SP_SIZE];
 		ret = DS18X20_read_scratchpad(gSensorIDs[x],scratchpad);
+		if (ret != DS18X20_OK) { // short circuit
+			packet_append_string_P(&main_packet,PSTR("U U "));
+			continue;
+		}
+		if (crc8(&scratchpad[0], DS18X20_SP_SIZE)) { // CRC error
+			packet_append_string_P(&main_packet,PSTR("U U "));
+			state |= rescan;
+			continue;
+		}
 //memcpy(&(bin_packet.data[bin_packet.length_l]), scratchpad,2);
 //bin_packet.length_l = bin_packet.length_l + 2;
 		DS18X20_meas_to_cel(gSensorIDs[x][0], scratchpad, &subzero, &cel, &cel_frac_bits);
+		uint16_t raw_temp = (cel * 16) + cel_frac_bits;
 		if (ret == DS18X20_OK) {
+			sensor_scanned(gSensorIDs[x],subzero,raw_temp);
 			if (subzero) packet_append_byte(&main_packet,'-');
 			packet_printf(&main_packet,"%d %d ",cel,cel_frac_bits);
 		} else {
@@ -342,13 +371,13 @@ int check_temps() {
 			packet_append_string_P(&main_packet,PSTR("U U "));
 		}
 	}
-	packet_printf(&main_packet,"c %d %d e\n",adc_value,check_count++);
+	packet_printf(&main_packet,"c %d %d %d e\n",adc_value,check_count++,PORTB);
 	packet_end_send(&main_packet);
 	_delay_ms(100);
 	//packet_end_send(&bin_packet);
 	return main_return;
 }
-#ifdef SORT
+uint8_t living_room[OW_ROMCODE_SIZE] = { 0x28, 0xcc, 0x7c, 0xcd, 0x02, 0x00, 0x00, 0x5b }; 
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	unsigned int i;
 	for (i = 0; i < OW_ROMCODE_SIZE; i++) {
@@ -357,7 +386,15 @@ int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	}
 	return 0;
 }
-#endif
+#define CC(cel,frac) ((cel * 16) + frac)
+uint16_t livingroom_min = CC(22,0);
+uint16_t livingroom_max = CC(22,8);
+void sensor_scanned(uint8_t addr[OW_ROMCODE_SIZE],uint8_t subzero,uint16_t raw_temp) {
+	if (compare(living_room,addr) == 0) {
+		if (livingroom_min > raw_temp) set_zone1(1);
+		if (livingroom_max < raw_temp) set_zone1(0);
+	}
+}
 uint8_t search_sensors(void) {
 	uint8_t i,j,k;
         uint8_t id[OW_ROMCODE_SIZE];
