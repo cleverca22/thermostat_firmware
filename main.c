@@ -13,6 +13,14 @@
 #include "packet.h"
 #include "main.h"
 
+
+/* PIN/PORT USAGE:
+ * PORTD:
+ * PD0 == RXD
+ * PD1 == TXD
+ * PD2 == dryer on??
+ * */
+
 #define NO_PARASITE
 
 void display_number(int number);
@@ -36,6 +44,13 @@ enum my_flags { rescan=0x1, dump=0x2 };
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
 volatile uint8_t OK; // make this into a bit-field
 xbee_packet isr_packet;
+
+volatile uint8_t dryer_on = 0;
+
+ISR(INT0_vect) {
+	dryer_on = 1;
+	EIMSK &= ~_BV(INT0); // mask interupt out so it doesnt swamp the uC
+}
 
 
 EMPTY_INTERRUPT(WDT_vect);
@@ -192,6 +207,10 @@ void init() {
 	send_string_P(PSTR("entered api1 mode\n"));
 
 	DDRB |= _BV(PB1); // zone 1 control is output
+	DDRD &= ~_BV(PD2); // dryer on is input with pullup
+	PORTD |= _BV(PD2); // negative going half should yank the pullup to gnd
+	EIMSK = _BV(INT0);
+
 	set_zone1(0); // zone 1 off by default
 #ifdef ignore_this_code
 	SPI_MasterInit();
@@ -281,6 +300,7 @@ int main(void) {
 
 	// repeat forever
 	sei();
+	uint8_t dryer_status = 0;
 	int ret;
 	while (1) {
 		if (__bss_end != startups) {
@@ -304,9 +324,19 @@ int main(void) {
 			packet_end_send(&main_packet);
 		}
 		sei();
+		EIMSK = _BV(INT0); // turn the interupt on once per run
 		if (state & rescan) nSensors = scan_sensors();
 		if (state & dump) do_dump_sensors();
 		ret = check_temps();
+
+		if ((dryer_status == 0) && (dryer_on == 1)) { // it just came on
+			printf("dryer came on\n");
+			dryer_status = 1;
+		} else if ((dryer_status == 1) && (dryer_on == 0)) { // it just went off
+			printf("dryer turned off\n");
+			dryer_status = 0;
+		}
+		dryer_on = 0;
 		//if (ret != 1) XBEE_OFF;
 		wdt_delay();
 	}
