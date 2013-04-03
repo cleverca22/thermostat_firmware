@@ -41,7 +41,7 @@ void inline packet_tx_byte(uint8_t byte) { // size 22(19)
 void packet_send(xbee_packet *pkt) {
 	//USART_Transmit(0x7e);
 	uint8_t *hack;
-	hack = &(pkt->data);
+	hack = (uint8_t*) &(pkt->data);
 	int x;
 	//USART_Transmit(0); // length high byte
 	for (x = 0; x <= (pkt->length_l + 1); x++) {
