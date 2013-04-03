@@ -195,6 +195,23 @@ uint8_t DS18X20_start_meas( uint8_t with_power_extern, uint8_t id[])
 }
 
 
+uint8_t DS18X20_read_scratchpad( uint8_t id[], uint8_t sp[] )
+{
+	uint8_t i;
+	
+	ow_reset(); //**
+	if( ow_input_pin_state() ) { // only send if bus is "idle" = high
+		ow_command( DS18X20_READ, id );
+		for ( i=0 ; i< DS18X20_SP_SIZE; i++ )	sp[i]=ow_byte_rd();
+		return DS18X20_OK;
+	} 
+	else { 
+		#ifdef DS18X20_VERBOSE
+		uart_puts_P( "DS18X20_read_scratchpad: Short Circuit !\r" );
+		#endif
+		return DS18X20_ERROR;
+	}
+}
 
 #ifdef DS18X20_EEPROMSUPPORT
 
@@ -217,23 +234,6 @@ uint8_t DS18X20_write_scratchpad( uint8_t id[],
 	}
 }
 
-uint8_t DS18X20_read_scratchpad( uint8_t id[], uint8_t sp[] )
-{
-	uint8_t i;
-	
-	ow_reset(); //**
-	if( ow_input_pin_state() ) { // only send if bus is "idle" = high
-		ow_command( DS18X20_READ, id );
-		for ( i=0 ; i< DS18X20_SP_SIZE; i++ )	sp[i]=ow_byte_rd();
-		return DS18X20_OK;
-	} 
-	else { 
-		#ifdef DS18X20_VERBOSE
-		uart_puts_P( "DS18X20_read_scratchpad: Short Circuit !\r" );
-		#endif
-		return DS18X20_ERROR;
-	}
-}
 
 uint8_t DS18X20_copy_scratchpad( uint8_t with_power_extern, 
 	uint8_t id[] )
