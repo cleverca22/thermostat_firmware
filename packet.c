@@ -44,6 +44,7 @@ void packet_send(xbee_packet *pkt) {
 	hack = &(pkt->data);
 	int x;
 	//USART_Transmit(0); // length high byte
+	USART_Transmit('\n'); // prefix the packet with \n
 	for (x = 0; x <= (pkt->length_l + 1); x++) {
 		packet_tx_byte(hack[x]);
 	}
