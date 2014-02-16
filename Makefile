@@ -19,7 +19,7 @@ avr.bin: a.out
 	avr-objcopy -j .text -j .data -O binary a.out avr.bin
 
 a.out: ${OBJECTS}
-	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map
+	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map #-Wl,-T,/usr/i486-pc-linux-gnu/avr/lib/ldscripts/avr5.x
 
 size: a.out ${OBJECTS}
 	avr-size -t ${OBJECTS}
@@ -29,7 +29,7 @@ size: a.out ${OBJECTS}
 	ls -l a.out ${OBJECTS}
 
 %.asm: %.c *.h
-	#mv $@ $@.old
+	-mv $@ $@.old
 	avr-gcc ${CFLAGS} -S $< -o $@
 
 program: avr.bin
@@ -51,12 +51,12 @@ status_resume:
 	avrdude -E noreset -p ${CHIP} -v -i 50
 clean:
 	-rm ${OBJECTS} a.out
-	mv -v avr.bin avr.bin.backup
+	-mv -v avr.bin avr.bin.backup
 fat_functions: a.out
 	avr-objdump -t a.out|sort -rk4
 router_program: avr.bin
 	scp avr.bin newrouter:/home/clever/avr/avr.bin
-	ssh newrouter -t /usr/local/bin/avrdude -p ${CHIP} -U flash:w:/home/clever/avr/avr.bin -y -i 15
+	ssh newrouter -t time /usr/local/bin/avrdude -p ${CHIP} -U flash:w:/home/clever/avr/avr.bin -y
 main.o: main.c packet.h main.h
 full_dump.lss: a.out
 	avr-objdump -h -S a.out > full_dump.lss
