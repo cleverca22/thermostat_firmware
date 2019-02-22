@@ -7,19 +7,19 @@ DS18B20=ds18x20/DS18X20_get_power_status.o ds18x20.o ds18x20/DS18X20_read_meas.o
 OBJECTS=packet.o main.o my_uart.o onewire.o ${DS18B20} crc8.o
 .SECONDARY: main.S my_uart.S
 
-CFLAGS=-mmcu=${CHIP_GCC} -Os -DF_CPU=${F_CPU} -DBAUD=${BAUD}
+CFLAGS=-mmcu=${CHIP_GCC} -O2 -DF_CPU=${F_CPU} -DBAUD=${BAUD}
 CC=avr-gcc
 
 all: avr.bin
 
-%.o: %.S
-	avr-gcc -mmcu=${CHIP_GCC} -Os -c $< -o $@
+%.o: %.c
+	avr-gcc -mmcu=${CHIP_GCC} -c $< -o $@ ${CFLAGS}
 
 avr.bin: a.out
 	avr-objcopy -j .text -j .data -O binary a.out avr.bin
 
 a.out: ${OBJECTS}
-	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -Os -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map #-Wl,-T,/usr/i486-pc-linux-gnu/avr/lib/ldscripts/avr5.x
+	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map -Wl,-T,/usr/lib/binutils/avr/2.24/ldscripts/avr5.x -lc
 
 size: a.out ${OBJECTS}
 	avr-size -t ${OBJECTS}
@@ -34,7 +34,7 @@ size: a.out ${OBJECTS}
 
 program: avr.bin
 	beep -r 2
-	avrdude -E noreset -p m168 -U flash:w:avr.bin -y -i 15 -P /dev/ttyS0
+	avrdude -E noreset -p m168 -U flash:w:avr.bin -y -i 15
 	beep -r 3
 wifi_program: avr.bin
 	wifi_program
@@ -53,7 +53,7 @@ clean:
 	-rm ${OBJECTS} a.out
 	-mv -v avr.bin avr.bin.backup
 fat_functions: a.out
-	avr-objdump -t a.out|sort -rk4
+	avr-objdump -t a.out|sort -rk4|head -n15
 router_program: avr.bin
 	scp avr.bin newrouter:/home/clever/avr/avr.bin
 	ssh newrouter -t time /usr/local/bin/avrdude -p ${CHIP} -U flash:w:/home/clever/avr/avr.bin -y

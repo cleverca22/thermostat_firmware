@@ -32,8 +32,3 @@ void USART_Init() {
 			_delay_ms(10);
 	}
 }
-char getch(void)
-{
-	while ( !(UCSR0A & (1<<RXC0)) );
-	return UDR0;
-}

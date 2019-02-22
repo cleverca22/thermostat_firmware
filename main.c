@@ -7,6 +7,7 @@
 #include <avr/wdt.h>
 #include <stdio.h>
 #include <avr/pgmspace.h>
+#include <string.h>
 #include "my_uart.h"
 #include "onewire.h"
 #include "ds18x20.h"
@@ -15,6 +16,9 @@
 
 
 /* PIN/PORT USAGE:
+ * PORTB:
+ * PB0 == one-wire bus
+ * PB1 == zone 0 control
  * PORTD:
  * PD0 == RXD
  * PD1 == TXD
@@ -29,10 +33,14 @@ int nSensors = 0;
 #ifdef PARASITE
 uint8_t parasite_mode;
 #endif
+static char getch(void) {
+	while ( !(UCSR0A & (1<<RXC0)) );
+	return UDR0;
+}
 static FILE mystdout = FDEV_SETUP_STREAM(USART_Transmit, getch,_FDEV_SETUP_RW);
 
-#define XBEE_ON DDRC |= _BV(PC4)
-#define XBEE_OFF DDRC &= ~_BV(PC4)
+//#define XBEE_ON DDRC |= _BV(PC4)
+//#define XBEE_OFF DDRC &= ~_BV(PC4)
 
 uint8_t search_sensors(void);
 int scan_sensors();
@@ -40,115 +48,86 @@ int check_temps();
 uint8_t check_count = 0;
 // flags
 enum my_flags { rescan=0x1, dump=0x2 };
+volatile uint8_t buffers;
 volatile enum my_flags state = rescan; // 16 bit, fix it to be 8 bit
-volatile uint8_t OK; // make this into a bit-field
-xbee_packet isr_packet;
 
 
 //ISR(INT0_vect) {}
 
 
 EMPTY_INTERRUPT(WDT_vect);
-volatile char serial_buffer[20];
-volatile uint8_t ser_buf_size;
-volatile xbee_packet rx_packet;
+char serial_buffer[8][20];
+uint8_t ser_buf_size;
+//volatile xbee_packet rx_packet;
+#define CC(cel,frac) ((cel * 16) + frac)
+uint16_t livingroom_min = CC(22,0);
+uint16_t livingroom_max = CC(22,8);
+
+uint16_t bedroom_min = CC(22,0);
+uint16_t bedroom_max = CC(22,8);
 
 void packet_recieved(xbee_packet *pkt);
 void sensor_scanned(uint8_t addr[OW_ROMCODE_SIZE],uint8_t subzero,uint16_t raw_temp);
+void parseCommand(char *buf) {
+	int zone,min,max;
+	char *part;
+	char *rest;
+	part = strtok_r(buf," ",&rest);
+	if (strcmp_P(part,PSTR("set")) == 0) {
+		sscanf_P(rest,PSTR("%d %d %d"),&zone,&min,&max);
+		switch (zone) {
+		case 0:
+			livingroom_min = min;
+			livingroom_max = max;
+			break;
+		case 1:
+			bedroom_min = min;
+			bedroom_max = max;
+			break;
+		default:
+			printf_P(PSTR("test %d %d %d\n"),zone,min,max);
+		}
+	} else if (strcmp_P(part,PSTR("rescan")) == 0) {
+		state |= rescan;
+	} else if (strcmp_P(part,PSTR("dump2")) == 0) {
+		state |= dump;
+	} else printf_P(PSTR("bad %s\n"),part);
+}
 ISR(USART_RX_vect) {
-	static uint8_t uart_state = 0;
-	static uint8_t rx_state = 0,remaining_bytes,checksum;
 	unsigned char status = UCSR0A;
 	unsigned char tmp = getch();
+	char *buffer = 0;
+	static uint8_t nextbuffer=0;
 
-	switch (tmp) {
-		case '1':
-			state |= rescan;
-			break;
-		case '2':
-			state |= dump;
-			break;
-		default:
-			printf("unknown byte %d\n",tmp);
+	if (buffers & (1<<nextbuffer)) { // target buffer is used
+	} else buffer = serial_buffer[nextbuffer];
+
+	if (buffer && (ser_buf_size < 20)) {
+		buffer[ser_buf_size] = tmp;
+		if (tmp == '\n') {
+			buffer[ser_buf_size] = 0;
+			if (nextbuffer == 7) {
+				buffers |= 1<<nextbuffer;
+				nextbuffer = 0;
+			} else {
+				buffers |= 1<<nextbuffer;
+				nextbuffer++;
+			}
+			ser_buf_size = 0;
+		} else ser_buf_size++;
+	} else if (buffer == 0) { // all buffers in use
+		while ( !( UCSR0A & (1<<UDRE0)) ) ;
+		UDR0 = 'X';
+		while ( !( UCSR0A & (1<<UDRE0)) ) ;
+		UDR0 = '\n';
+	} else { // buffer overflow
+		while ( !( UCSR0A & (1<<UDRE0)) ) ;
+		UDR0 = 'Y';
+		while ( !( UCSR0A & (1<<UDRE0)) ) ;
+		UDR0 = '\n';
+		ser_buf_size = 0;
 	}
 	return;
-/*
-	if ((tmp == 'O') && (uart_state == 0)) { uart_state = 1; }
-	if ((tmp == 'K') && (uart_state == 1)) { uart_state = 2; }
-	if ((tmp == '\r') && (uart_state == 2)) { OK=1; uart_state = 0; }
-	switch (tmp) {
-		case 0x7e:
-			rx_packet.length_l = 0;
-			rx_state = 1;
-			checksum = 0;
-			break;
-		default:
-			//start_tx_packet(&isr_packet,0,0);
-			//packet_append_string_P(&isr_packet,PSTR("isr read in "));
-			//snprintf_P(buffer,12,PSTR("%c(%d) %d\n"),tmp,tmp,status);
-			//packet_append_string(&isr_packet,buffer);
-			//packet_end_send(&isr_packet);
-			switch (rx_state) {
-			case 1:// length h
-				if (tmp == 0) {
-					rx_state++;
-					break;
-				}
-				rx_state = 0;
-				goto err;
-			case 2:// length l
-				remaining_bytes = tmp;
-				rx_state++;
-				break;
-			case 3:// data
-				checksum += tmp;
-				rx_packet.data[rx_packet.length_l] = tmp;
-				rx_packet.length_l++;
-				remaining_bytes--;
-				if (remaining_bytes == 0) rx_state++;
-				break;
-			case 4:// checksum
-				checksum += tmp;
-				//start_tx_packet(&isr_packet,0,0);
-				//packet_append_string_P(&isr_packet,PSTR("isr read in "));
-				//snprintf_P(buffer,12,PSTR("%d %c\n"),rx_packet.length_l,rx_packet.data[5]);
-				//packet_append_string(&isr_packet,buffer);
-				//packet_end_send(&isr_packet);
-				if (checksum == 0xff) packet_recieved(&rx_packet);
-			}
-			return;
-err:
-			if (ser_buf_size < 20) {
-				serial_buffer[ser_buf_size] = tmp;
-				ser_buf_size++;
-			}
-	}
-*/
-}
-void packet_recieved(xbee_packet *pkt) {
-	switch ((uint8_t)pkt->data[0]) { // api type
-	case 0x81: // 16bit tx
-		if (pkt->length_l >= 6) {
-			switch (pkt->data[5]) {
-			case '1':
-				state |= rescan;
-				break;
-			case '2':
-				state |= dump;
-				break;
-			/*default:
-				send_string("unknown byte\n");*/
-			}
-		} /*else {
-			send_string("packet too short\n");
-		}*/
-		break;
-	default:
-		start_tx_packet(&isr_packet,0,0);
-		packet_printf_P(&isr_packet,PSTR("%d %x\n"),pkt->length_l,pkt->data[0]);
-		packet_end_send(&isr_packet);
-	}
-				
 }
 
 void adc_init() {
@@ -157,24 +136,36 @@ void adc_init() {
 	DDRC &= ~_BV(PC0);
 	PORTC &= ~_BV(PC0);
 }
-void set_zone1(unsigned char on) { // livingroom, kitchen
+void set_zone0(unsigned char on) { // livingroom, kitchen
 	static uint8_t last_state = 0;
 	if (on) {
 		PORTB |= _BV(PB1);
-		if (last_state != 1) printf("turning livingroom on\n");
+		if (last_state != 1) puts_P(PSTR("turning livingroom on"));
 		last_state = 1;
 	} else {
 		PORTB &= ~_BV(PB1);
-		if (last_state != 0) printf("turning livingroom off\n");
+		if (last_state != 0) puts_P(PSTR("turning livingroom off"));
 		last_state = 0;
 	}
 }
-#define OK_WAIT while (OK == 0) {} OK=0
+void set_zone1(unsigned char on) { // bedroom, hallway, server room
+	static uint8_t last_state = 0;
+	if (on) {
+		//PORTB |= _BV(PB1);
+		if (last_state != 1) puts_P(PSTR("turning bedroom on"));
+		last_state = 1;
+	} else {
+		//PORTB &= ~_BV(PB1);
+		if (last_state != 0) puts_P(PSTR("turning bedroom off"));
+		last_state = 0;
+	}
+}
+//#define OK_WAIT while (OK == 0) {} OK=0
 uint8_t startups;
 void init() {
 	PRR = _BV(PRTWI) | _BV(PRTIM2) | _BV(PRTIM0) | _BV(PRTIM1) | _BV(PRSPI); // min
 	PORTC &= ~_BV(PC4); // min
-	XBEE_ON;
+	//XBEE_ON;
 	USART_Init(); // min
 	stdout = &mystdout;
 	_delay_ms(5);
@@ -182,6 +173,7 @@ void init() {
 
 
 	adc_init();
+	adc_on();
 	startups = eeprom_read_byte(0);
 	startups++;
 	eeprom_write_byte(0,startups);
@@ -201,10 +193,11 @@ void init() {
 	//printf_P(PSTR("ATCN\r"));
 	send_string_P(PSTR("entered api1 mode\n"));
 
-	DDRB |= _BV(PB1); // zone 1 control is output
+	DDRB |= _BV(PB1); // zone 0 control is output
 	EICRA = _BV(ISC01) | _BV(ISC00);
 	//EIMSK = _BV(INT0);
 
+	set_zone0(0); // zone 0 off by default
 	set_zone1(0); // zone 1 off by default
 #ifdef ignore_this_code
 	SPI_MasterInit();
@@ -245,7 +238,7 @@ void wdt_delay() {
 void do_dump_sensors() {
 	_delay_ms(10);
 	uint8_t x,y;
-	printf("\n%d sensors\n",nSensors);
+	printf_P(PSTR("\n%d sensors\n"),nSensors);
 	for (y=0; y < nSensors;y++) {
 		printf_P(PSTR("A %d "),(uint16_t)y);
 		for (x=0; x < 8; x++) {
@@ -288,35 +281,28 @@ int main(void) {
 			_delay_ms(100);
 		}
 	}
-	start_tx_packet(&main_packet,0,0);
-	packet_printf(&main_packet,"last reset caused by code %2d\n",old_mcusr);
-	packet_end_send(&main_packet);
+	printf_P(PSTR("last reset caused by code %2d\n"),old_mcusr);
 
 	// repeat forever
 	sei();
 	int ret;
+	uint8_t buf;
 	while (1) {
 		if (__bss_end != startups) {
 			while (1) {
-				send_string("stack overflow!!!\n");
+				puts_P(PSTR("stack overflow!!!"));
 				_delay_ms(1000);
 			}
 		}
-/*		cli();
-		if (ser_buf_size) {
-			start_tx_packet(&main_packet,0,0);
-			packet_append_string(&main_packet,"unknown bytes in serial buffer ");
-			uint8_t x;
-			for (x = 0; x < ser_buf_size; x++) {
-				packet_printf(&main_packet,"%x ",(uint8_t)serial_buffer[x]);
+		if (buffers) {
+			for (buf=0; buf<8; buf++) {
+				if (buffers & (1<<buf)) {
+					printf("reading buffer %d\n",buf);
+					parseCommand(serial_buffer[buf]);
+					buffers &= ~(1<<buf);
+				}
 			}
-			packet_append_byte(&main_packet,'\n');
-			ser_buf_size = 0;
-			state |= dump;
-			sei();
-			packet_end_send(&main_packet);
 		}
-		sei();*/
 		if (state & rescan) nSensors = scan_sensors();
 		if (state & dump) do_dump_sensors();
 		ret = check_temps(); // +760ms
@@ -332,15 +318,14 @@ int check_temps() {
 	uint8_t x;
 	uint8_t ret;
 	uint8_t subzero,cel,cel_frac_bits;
-	adc_on();
 	#ifdef PARASITE
 	ret = DS18X20_start_meas(parasite_mode, NULL );
 	#else
 	ret = DS18X20_start_meas(DS18X20_POWER_EXTERN,NULL);
 	#endif
 	if (ret != DS18X20_OK) {
-		XBEE_ON;
-		_delay_ms(10);
+		//XBEE_ON;
+		//_delay_ms(10);
 		send_string_P(PSTR("start fail\n"));
 		state |= rescan;
 		return;
@@ -349,7 +334,6 @@ int check_temps() {
 	_delay_ms(DS18B20_TCONV_12BIT);
 	uint16_t adc_value = ADC;
 	if (adc_value == 1023) main_return = 1;
-	adc_off();
 	start_tx_packet(&main_packet,0,0);
 	packet_append_string_P(&main_packet,PSTR("s r "));
 	//xbee_packet bin_packet;
@@ -381,19 +365,20 @@ int check_temps() {
 		if (ret == DS18X20_OK) {
 			sensor_scanned(gSensorIDs[x],subzero,raw_temp);
 			if (subzero) packet_append_byte(&main_packet,'-');
-			packet_printf(&main_packet,"%d %d ",cel,cel_frac_bits);
+			packet_printf_P(&main_packet,PSTR("%d %d "),cel,cel_frac_bits);
 		} else {
 			state |= rescan;
 			packet_append_string_P(&main_packet,PSTR("U U "));
 		}
 	}
-	packet_printf(&main_packet,"c %d %d %d e\n",adc_value,check_count++,PORTB);
+	packet_printf_P(&main_packet,PSTR("c %d %d %d e\n"),adc_value,check_count++,PORTB);
 	packet_end_send(&main_packet);
 	_delay_ms(100);
 	//packet_end_send(&bin_packet);
 	return main_return;
 }
 uint8_t living_room[OW_ROMCODE_SIZE] = { 0x28, 0xcc, 0x7c, 0xcd, 0x02, 0x00, 0x00, 0x5b }; 
+uint8_t bedroom[OW_ROMCODE_SIZE] = { 0x28, 0xf3, 0xa9, 0xcd, 0x02, 0x00, 0x00, 0x1e };
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	unsigned int i;
 	for (i = 0; i < OW_ROMCODE_SIZE; i++) {
@@ -402,13 +387,13 @@ int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	}
 	return 0;
 }
-#define CC(cel,frac) ((cel * 16) + frac)
-uint16_t livingroom_min = CC(22,0);
-uint16_t livingroom_max = CC(22,8);
 void sensor_scanned(uint8_t addr[OW_ROMCODE_SIZE],uint8_t subzero,uint16_t raw_temp) {
 	if (compare(living_room,addr) == 0) {
-		if (livingroom_min > raw_temp) set_zone1(1);
-		if (livingroom_max < raw_temp) set_zone1(0);
+		if (livingroom_min > raw_temp) set_zone0(1);
+		if (livingroom_max < raw_temp) set_zone0(0);
+	} else if (compare(bedroom,addr) == 0) {
+		if (bedroom_min > raw_temp) set_zone1(1);
+		if (bedroom_max < raw_temp) set_zone1(0);
 	}
 }
 uint8_t search_sensors(void) {
@@ -487,8 +472,8 @@ void check_parasite() {
 }
 #endif
 int scan_sensors() {
-	XBEE_ON;
-	_delay_ms(10);
+	//XBEE_ON;
+	//_delay_ms(10);
 	send_string_P(PSTR("rescanning for sensors\n"));
 	int nSensors = 0;
 	while (!nSensors) {
@@ -501,6 +486,7 @@ int scan_sensors() {
 	#ifdef PARASITE
 	check_parasite();
 	#endif
-	state = dump;
+	state |= dump;
+	state &= ~rescan;
 	return nSensors;
 }
