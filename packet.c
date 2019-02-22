@@ -2,6 +2,8 @@
 #include <stdarg.h>
 #include "packet.h"
 #include "my_uart.h"
+#include <avr/pgmspace.h>
+#include <stdio.h>
 
 void start_packet(xbee_packet *pkt,uint8_t type) {
 	pkt->length_l = 0;

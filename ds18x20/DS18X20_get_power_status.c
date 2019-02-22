@@ -1,7 +1,8 @@
 #include "../ds18x20.h"
+#include "../onewire.h"
 
-/* get power status of DS18x20 
-   input  : id = rom_code 
+/* get power status of DS18x20
+   input  : id = rom_code
    returns: DS18X20_POWER_EXTERN or DS18X20_POWER_PARASITE */
 uint8_t	DS18X20_get_power_status(uint8_t id[])
 {

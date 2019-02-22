@@ -19,7 +19,7 @@ avr.bin: a.out
 	avr-objcopy -j .text -j .data -O binary a.out avr.bin
 
 a.out: ${OBJECTS}
-	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map -Wl,-T,/usr/lib/binutils/avr/2.24/ldscripts/avr5.x -lc
+	${CC} ${OBJECTS} -mmcu=${CHIP_GCC} -o a.out -Wl,-u,vfprintf -lprintf_min -Wl,-Map,output.map  -lc
 
 size: a.out ${OBJECTS}
 	avr-size -t ${OBJECTS}

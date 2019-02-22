@@ -13,7 +13,9 @@
 #include "ds18x20.h"
 #include "packet.h"
 #include "main.h"
+#include "crc8.h"
 
+void adc_on();
 
 /* PIN/PORT USAGE:
  * PORTB:
@@ -328,7 +330,7 @@ int check_temps() {
 		//_delay_ms(10);
 		send_string_P(PSTR("start fail\n"));
 		state |= rescan;
-		return;
+		return main_return;
 	}
 	ADCSRA |= _BV(ADSC);
 	_delay_ms(DS18B20_TCONV_12BIT);
@@ -377,7 +379,7 @@ int check_temps() {
 	//packet_end_send(&bin_packet);
 	return main_return;
 }
-uint8_t living_room[OW_ROMCODE_SIZE] = { 0x28, 0xcc, 0x7c, 0xcd, 0x02, 0x00, 0x00, 0x5b }; 
+uint8_t living_room[OW_ROMCODE_SIZE] = { 0x28, 0xcc, 0x7c, 0xcd, 0x02, 0x00, 0x00, 0x5b };
 uint8_t bedroom[OW_ROMCODE_SIZE] = { 0x28, 0xf3, 0xa9, 0xcd, 0x02, 0x00, 0x00, 0x1e };
 int8_t compare(uint8_t a[OW_ROMCODE_SIZE], uint8_t b[OW_ROMCODE_SIZE]) {
 	unsigned int i;
@@ -402,28 +404,28 @@ uint8_t search_sensors(void) {
         uint8_t diff, nSensors;
         nSensors = 0;
 	uint8_t lSensorIDs[MAXSENSORS][OW_ROMCODE_SIZE];
-        
-        for (diff = OW_SEARCH_FIRST; 
+
+        for (diff = OW_SEARCH_FIRST;
                 diff != OW_LAST_DEVICE && nSensors < MAXSENSORS ; ) {
 		// DS18X20_find_sensor is a wrapper to filter the list, but i have nothing to filter out
 		DS18X20_find_sensor( &diff, &id[0] );
-                
+
                 if( diff == OW_PRESENCE_ERR ) {
 			//printf("presence err %x\n",diff);
                         break;
                 }
-                
+
                 if( diff == OW_DATA_ERR ) {
 			//printf("data error\r\n");
                         break;
                 }
-                
+
 #ifdef SORT
                 for (i=0;i<OW_ROMCODE_SIZE;i++) lSensorIDs[nSensors][i]=id[i];
 #else
                 for (i=0;i<OW_ROMCODE_SIZE;i++) gSensorIDs[nSensors][i]=id[i];
 #endif
-                
+
                 nSensors++;
         }
 #ifdef SORT
@@ -448,7 +450,7 @@ uint8_t search_sensors(void) {
 			reset_lowest = 1;
 		}
 #endif
-        
+
         return nSensors;
 }
 #ifdef PARASITE
